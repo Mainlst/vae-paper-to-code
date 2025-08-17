@@ -1,0 +1,189 @@
+from __future__ import annotations
+import argparse
+import os
+from dataclasses import asdict
+import pandas as pd
+import torch
+from torch import optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+
+from .vae import VAE, VAEConfig, reconstruction_loss, kld_standard_normal
+from .utils.vis import ensure_dir, save_reconstructions, save_samples, save_traversal
+
+
+def beta_scheduler(kind: str, epoch: int, total_epochs: int, base_beta: float) -> float:
+    if kind == "none":
+        return base_beta
+    if kind == "linear":
+        t = (epoch + 1) / max(1, total_epochs)
+        return base_beta * min(1.0, t)
+    if kind == "cyclic":
+        t = (epoch + 1) / max(1, total_epochs)
+        val = 2.0 * (0.5 - abs((t % 1.0) - 0.5))  # 0→1→0
+        return base_beta * val
+    raise ValueError(f"Unknown beta schedule: {kind}")
+
+
+def get_device(name: str) -> torch.device:
+    if name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    return torch.device(name)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="VAE (paper↔code alignment)")
+    p.add_argument("--epochs", type=int, default=20)
+    p.add_argument("--batch-size", type=int, default=128)
+    p.add_argument("--latent-dim", type=int, default=20)
+    p.add_argument("--hidden-dim", type=int, default=400)
+    p.add_argument("--loss", type=str, default="bce", choices=["bce", "bce_logits", "mse"])
+    p.add_argument("--beta", type=float, default=1.0)
+    p.add_argument("--beta-schedule", type=str, default="none", choices=["none", "linear", "cyclic"])
+    p.add_argument("--reduction", type=str, default="mean", choices=["mean", "sum"])
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--device", type=str, default="auto")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--save-dir", type=str, default="reports")
+    p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--no-pin", action="store_true")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    torch.manual_seed(args.seed)
+
+    device = get_device(args.device)
+
+    # Data: MNIST in [0,1], 28x28 → flatten
+    transform = transforms.Compose([transforms.ToTensor()])
+    train_ds = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
+    test_ds = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
+
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True,
+        num_workers=args.num_workers, pin_memory=not args.no_pin
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.num_workers, pin_memory=not args.no_pin
+    )
+
+    # Model
+    output_logits = (args.loss == "bce_logits")
+    cfg = VAEConfig(
+        input_dim=28 * 28,
+        hidden_dim=args.hidden_dim,
+        latent_dim=args.latent_dim,
+        output_logits=output_logits,
+    )
+    model = VAE(cfg).to(device)
+
+    opt = optim.Adam(model.parameters(), lr=args.lr)
+
+    # Output dirs
+    curves_dir = os.path.join(args.save_dir, "curves")
+    recon_dir = os.path.join(args.save_dir, "reconstructions")
+    sample_dir = os.path.join(args.save_dir, "samples")
+    trav_dir = os.path.join(args.save_dir, "traversals")
+    for d in [curves_dir, recon_dir, sample_dir, trav_dir]:
+        ensure_dir(d)
+
+    log_rows = []
+
+    def evaluate(epoch: int, beta_val: float):
+        model.eval()
+        with torch.no_grad():
+            x, _ = next(iter(test_loader))
+            x = x.to(device).view(x.size(0), -1)
+            x_hat, mu, logvar = model(x)
+            recon = reconstruction_loss(x, x_hat, args.loss, args.reduction)
+            kl = kld_standard_normal(mu, logvar, args.reduction)
+            total = recon + beta_val * kl
+
+            # Save reconstructions
+            x_in = x.view(-1, 1, 28, 28)
+            x_out = x_hat
+            if args.loss == "bce_logits":
+                x_out = torch.sigmoid(x_out)
+            x_out = x_out.view(-1, 1, 28, 28)
+            save_reconstructions(x_in, x_out, os.path.join(recon_dir, f"epoch_{epoch:04d}.png"), n=8)
+
+            # Save random samples
+            z = torch.randn(64, cfg.latent_dim, device=device)
+            x_samp = model.decode(z)
+            if args.loss == "bce_logits":
+                x_samp = torch.sigmoid(x_samp)
+            x_samp = x_samp.view(-1, 1, 28, 28)
+            save_samples(x_samp, os.path.join(sample_dir, f"epoch_{epoch:04d}.png"), nrow=8)
+
+            # Traversal for z=2
+            if cfg.latent_dim == 2:
+                save_traversal(model.decode, device, cfg.latent_dim, os.path.join(trav_dir, f"epoch_{epoch:04d}.png"))
+
+        return recon.item(), kl.item(), total.item()
+
+    for epoch in range(args.epochs):
+        model.train()
+        beta_val = beta_scheduler(args.beta_schedule, epoch, args.epochs, args.beta)
+
+        for x, _ in train_loader:
+            x = x.to(device).view(x.size(0), -1)
+            x_hat, mu, logvar = model(x)
+
+            recon = reconstruction_loss(x, x_hat, args.loss, args.reduction)
+            kl = kld_standard_normal(mu, logvar, args.reduction)
+            loss = recon + beta_val * kl
+
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+
+        # evaluation + logging
+        recon_val, kl_val, total_val = evaluate(epoch, beta_val)
+        log_rows.append({"epoch": epoch, "beta": beta_val, "recon": recon_val, "kl": kl_val, "total": total_val})
+        print(f"[{epoch+1:03d}/{args.epochs}] beta={beta_val:.3f} recon={recon_val:.3f} kl={kl_val:.3f} total={total_val:.3f}")
+
+        # persist model
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state": model.state_dict(),
+                "cfg": asdict(cfg),
+                "args": vars(args),
+            },
+            os.path.join(args.save_dir, f"vae_epoch_{epoch:04d}.pt"),
+        )
+
+        # save curves CSV and quick plot
+        import matplotlib.pyplot as plt
+        import pandas as pd
+
+        df = pd.DataFrame(log_rows)
+        csv_path = os.path.join(curves_dir, "train_log.csv")
+        df.to_csv(csv_path, index=False)
+
+        try:
+            plt.figure()
+            plt.plot(df["epoch"], df["recon"], label="recon")
+            plt.plot(df["epoch"], df["kl"], label="kl")
+            plt.plot(df["epoch"], df["total"], label="total")
+            plt.xlabel("epoch")
+            plt.ylabel("loss")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(os.path.join(curves_dir, "losses.png"))
+            plt.close()
+        except Exception as e:
+            print(f"[warn] plotting failed: {e}")
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
