@@ -6,7 +6,12 @@ import pandas as pd
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+try:
+    from torchvision import datasets, transforms  # type: ignore
+    _HAS_TORCHVISION = True
+except Exception as e:  # pragma: no cover
+    print(f"[warn] torchvision import failed: {e}. Using local MNIST loader.")
+    _HAS_TORCHVISION = False
 
 from .vae import VAE, VAEConfig, reconstruction_loss, kld_standard_normal
 from .utils.vis import ensure_dir, save_reconstructions, save_samples, save_traversal
@@ -61,9 +66,15 @@ def main():
     device = get_device(args.device)
 
     # Data: MNIST in [0,1], 28x28 → flatten
-    transform = transforms.Compose([transforms.ToTensor()])
-    train_ds = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
-    test_ds = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
+    if _HAS_TORCHVISION:
+        transform = transforms.Compose([transforms.ToTensor()])
+        train_ds = datasets.MNIST(root="./data", train=True, download=False, transform=transform)
+        test_ds = datasets.MNIST(root="./data", train=False, download=False, transform=transform)
+    else:
+        from .utils.mnist import MNISTLocal
+        transform = None  # MNISTLocal already returns tensors in [0,1]
+        train_ds = MNISTLocal(root="./data", train=True, transform=transform)
+        test_ds = MNISTLocal(root="./data", train=False, transform=transform)
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
