@@ -2,6 +2,8 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import asdict
+from datetime import datetime
+import json
 import pandas as pd
 import torch
 from torch import optim
@@ -42,6 +44,7 @@ def get_device(name: str) -> torch.device:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="VAE (paper↔code alignment)")
+    # Training
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--latent-dim", type=int, default=20)
@@ -53,9 +56,35 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--save-dir", type=str, default="reports")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--no-pin", action="store_true")
+
+    # Output (new structured layout)
+    p.add_argument(
+        "--project-dir",
+        type=str,
+        default="reports",
+        help="Project root directory to store all experiments (default: reports)",
+    )
+    p.add_argument(
+        "--group",
+        type=str,
+        default="",
+        help="Experiment group name (e.g., mnist-lat20-b1.0-linear-bce). If empty, generated automatically.",
+    )
+    p.add_argument(
+        "--name",
+        type=str,
+        default="",
+        help="Run name under the group. If empty, generated as YYYYmmdd-HHMMSS-seed{seed}.",
+    )
+    # Deprecated but kept for compatibility: if explicitly set to non-default, overrides structured layout
+    p.add_argument(
+        "--save-dir",
+        type=str,
+        default="reports",
+        help="[Deprecated] Direct output directory. If set to a non-default value, it overrides --project-dir/--group/--name.",
+    )
     return p.parse_args()
 
 
@@ -97,13 +126,61 @@ def main():
 
     opt = optim.Adam(model.parameters(), lr=args.lr)
 
-    # Output dirs
-    curves_dir = os.path.join(args.save_dir, "curves")
-    recon_dir = os.path.join(args.save_dir, "reconstructions")
-    sample_dir = os.path.join(args.save_dir, "samples")
-    trav_dir = os.path.join(args.save_dir, "traversals")
+    # Build structured output directories
+    def _auto_group() -> str:
+        # Keep concise but informative
+        return (
+            f"mnist-lat{args.latent_dim}-"
+            f"{args.loss}-"
+            f"beta{args.beta:g}-{args.beta_schedule}-"
+            f"{args.reduction}"
+        )
+
+    group = args.group or _auto_group()
+    name = args.name or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-seed{args.seed}"
+
+    # Backward-compat: if save-dir is explicitly set to non-default, use it as the final run dir
+    use_legacy = ("--save-dir" in os.sys.argv) and (args.save_dir != "reports")
+    run_dir = args.save_dir if use_legacy else os.path.join(args.project_dir, group, name)
+
+    # Subdirs
+    curves_dir = os.path.join(run_dir, "curves")
+    recon_dir = os.path.join(run_dir, "reconstructions")
+    sample_dir = os.path.join(run_dir, "samples")
+    trav_dir = os.path.join(run_dir, "traversals")
     for d in [curves_dir, recon_dir, sample_dir, trav_dir]:
         ensure_dir(d)
+
+    # Maintain a "latest" pointer per group for convenience
+    try:
+        group_dir = os.path.join(args.project_dir, group)
+        ensure_dir(group_dir)
+        latest_link = os.path.join(group_dir, "latest")
+        # Try to create/refresh symlink; fall back to a text file
+        try:
+            if os.path.islink(latest_link) or os.path.isfile(latest_link):
+                os.remove(latest_link)
+            os.symlink(os.path.relpath(run_dir, group_dir), latest_link)
+        except Exception:
+            with open(os.path.join(group_dir, "latest.txt"), "w", encoding="utf-8") as f:
+                f.write(run_dir + "\n")
+    except Exception as e:
+        print(f"[warn] failed to update latest pointer: {e}")
+
+    # Save run metadata for reproducibility
+    try:
+        meta = {
+            "group": group,
+            "name": name,
+            "run_dir": run_dir,
+            "args": vars(args),
+            "cfg": asdict(cfg),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        with open(os.path.join(run_dir, "run_meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[warn] failed to save run_meta.json: {e}")
 
     log_rows = []
 
@@ -168,7 +245,7 @@ def main():
                 "cfg": asdict(cfg),
                 "args": vars(args),
             },
-            os.path.join(args.save_dir, f"vae_epoch_{epoch:04d}.pt"),
+            os.path.join(run_dir, f"vae_epoch_{epoch:04d}.pt"),
         )
 
         # save curves CSV and quick plot
