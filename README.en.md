@@ -25,6 +25,8 @@ pip install -r requirements.txt
 
 ```bash
 # Structured outputs (recommended): reports/<group>/<name>/...
+# A date-serial prefix (YYYYMMDD-XXX-) is automatically added to the run name
+# (e.g., 20250831-001-test-run or 20250831-001-seed42). It auto-increments to avoid collisions.
 python -m src.train \
   --epochs 20 --batch-size 128 --latent-dim 20 \
   --loss bce --beta 1.0 --beta-schedule linear \
@@ -35,6 +37,13 @@ python -m src.train \
 python -m src.train --epochs 5 --save-dir reports_legacy
 ```
 
+### Checkpoint saving policy
+By default, weights (.pt) are not saved. Use `--save-weights` to enable checkpointing per epoch.
+
+Related options:
+- `--save-weights` … save `vae_epoch_XXXX.pt` per epoch
+- `--no-date-prefix` … disable auto date-serial prefixing of run names
+
 ## Outputs
 Recommended structured layout:
 
@@ -44,7 +53,7 @@ reports/
     latest -> ./<name>          # symlink to the latest run (or latest.txt if symlink fails)
     <name>/
       run_meta.json             # snapshot of all args and config
-      vae_epoch_0000.pt         # checkpoints per epoch
+  vae_epoch_0000.pt         # only when --save-weights is provided
       curves/
         train_log.csv           # epoch, beta, recon, kl, total
         losses.png              # quick plot

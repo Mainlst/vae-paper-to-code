@@ -32,6 +32,8 @@ pip install -r requirements.txt
 
 ```bash
 # 構造化出力（推奨）: reports/<group>/<name>/...
+# name には自動で日付-通し番号プレフィックス (YYYYMMDD-XXX-) が付与されます
+# （例: 20250831-001-test-run や 20250831-001-seed42）。既存ディレクトリと衝突しないよう自動インクリメントします。
 python -m src.train \
 	--epochs 20 --batch-size 128 --latent-dim 20 \
 	--loss bce --beta 1.0 --beta-schedule linear \
@@ -49,6 +51,13 @@ python -m src.train --epochs 5 --save-dir reports_legacy
 - `--reduction {mean,sum}` (既定: mean)
 - `--save-dir` 出力先 (curves, reconstructions, samples, traversals)
 
+### 保存ポリシー（チェックポイント）
+デフォルトでは重み（.pt）は保存しません。必要な場合は `--save-weights` を付けてください。
+
+関連オプション:
+- `--save-weights` … エポックごとに `vae_epoch_XXXX.pt` を保存
+- `--no-date-prefix` … ラン名の自動プレフィックス付与を無効化
+
 ## Outputs
 構造化出力の例（推奨）:
 
@@ -58,7 +67,7 @@ reports/
 		latest -> ./<name>          # 直近ランへのシンボリックリンク（失敗時は latest.txt）
 		<name>/
 			run_meta.json             # すべての引数と設定のスナップショット
-			vae_epoch_0000.pt         # 各エポックのチェックポイント
+			vae_epoch_0000.pt         # --save-weights 指定時のみ
 			curves/
 				train_log.csv           # epoch, beta, recon, kl, total
 				losses.png              # 学習曲線

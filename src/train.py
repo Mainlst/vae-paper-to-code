@@ -57,7 +57,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--no-pin", action="store_true")
+    p.add_argument("--no-pin", action="store_true", help="Disable DataLoader pin_memory (auto-disabled on CPU)")
+    p.add_argument("--persistent-workers", action="store_true", help="Keep DataLoader workers alive across epochs (requires num_workers>0)")
 
     # Output (new structured layout)
     p.add_argument(
@@ -76,7 +77,17 @@ def parse_args() -> argparse.Namespace:
         "--name",
         type=str,
         default="",
-        help="Run name under the group. If empty, generated as YYYYmmdd-HHMMSS-seed{seed}.",
+        help="Run name under the group. If empty, generated as seed{seed} (prefixed with date-serial).",
+    )
+    p.add_argument(
+        "--no-date-prefix",
+        action="store_true",
+        help="Disable auto prefixing run name with YYYYMMDD-XXX serial (per group/day).",
+    )
+    p.add_argument(
+        "--save-weights",
+        action="store_true",
+        help="Save model checkpoints (default: do not save).",
     )
     # Deprecated but kept for compatibility: if explicitly set to non-default, overrides structured layout
     p.add_argument(
@@ -105,13 +116,23 @@ def main():
         train_ds = MNISTLocal(root="./data", train=True, transform=transform)
         test_ds = MNISTLocal(root="./data", train=False, transform=transform)
 
+    pin_mem = (device.type == "cuda") and (not args.no_pin)
+    pw = args.persistent_workers and (args.num_workers > 0)
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, pin_memory=not args.no_pin
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=pin_mem,
+        persistent_workers=pw,
     )
     test_loader = DataLoader(
-        test_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, pin_memory=not args.no_pin
+        test_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=pin_mem,
+        persistent_workers=pw,
     )
 
     # Model
@@ -137,7 +158,39 @@ def main():
         )
 
     group = args.group or _auto_group()
-    name = args.name or f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-seed{args.seed}"
+
+    def _gen_prefixed_name(base: str) -> str:
+        if args.no_date_prefix:
+            return base
+        today = datetime.now().strftime('%Y%m%d')
+        group_dir = os.path.join(args.project_dir, group)
+        ensure_dir(group_dir)
+        # If base already starts with today's date-serial, keep as is
+        import re
+        if re.match(rf"^{today}-\\d{{3}}[\-_]", base):
+            return base
+        # Find next serial for today
+        existing = []
+        try:
+            for entry in os.listdir(group_dir):
+                if os.path.isdir(os.path.join(group_dir, entry)) and entry.startswith(f"{today}-"):
+                    m = re.match(rf"^{today}-(\\d{{3}})", entry)
+                    if m:
+                        existing.append(int(m.group(1)))
+        except Exception:
+            pass
+        next_id = (max(existing) + 1) if existing else 1
+        prefix = f"{today}-{next_id:03d}"
+        candidate = f"{prefix}-{base}" if base else prefix
+        # Ensure uniqueness
+        while os.path.exists(os.path.join(group_dir, candidate)):
+            next_id += 1
+            prefix = f"{today}-{next_id:03d}"
+            candidate = f"{prefix}-{base}" if base else prefix
+        return candidate
+
+    base_name = args.name or f"seed{args.seed}"
+    name = _gen_prefixed_name(base_name)
 
     # Backward-compat: if save-dir is explicitly set to non-default, use it as the final run dir
     use_legacy = ("--save-dir" in os.sys.argv) and (args.save_dir != "reports")
@@ -238,19 +291,23 @@ def main():
         print(f"[{epoch+1:03d}/{args.epochs}] beta={beta_val:.3f} recon={recon_val:.3f} kl={kl_val:.3f} total={total_val:.3f}")
 
         # persist model
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state": model.state_dict(),
-                "cfg": asdict(cfg),
-                "args": vars(args),
-            },
-            os.path.join(run_dir, f"vae_epoch_{epoch:04d}.pt"),
-        )
+        if args.save_weights:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state": model.state_dict(),
+                    "cfg": asdict(cfg),
+                    "args": vars(args),
+                },
+                os.path.join(run_dir, f"vae_epoch_{epoch:04d}.pt"),
+            )
 
         # save curves CSV and quick plot
-        import matplotlib.pyplot as plt
-        import pandas as pd
+        # Use a non-interactive backend to avoid blocking in headless envs
+        import matplotlib  # type: ignore
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt  # type: ignore
+        import pandas as pd  # type: ignore
 
         df = pd.DataFrame(log_rows)
         csv_path = os.path.join(curves_dir, "train_log.csv")
