@@ -51,6 +51,38 @@ python -m src.train --epochs 5 --save-dir reports_legacy
 - `--reduction {mean,sum}` (既定: mean)
 - `--save-dir` 出力先 (curves, reconstructions, samples, traversals)
 
+### Weights & Biases 連携（任意）
+学習ログを [Weights & Biases](https://wandb.ai/) に送ることができます。
+
+主なオプション:
+- `--wandb` … 有効化スイッチ
+- `--wandb-project` … プロジェクト名（既定: `vae-paper-to-code`）
+- `--wandb-entity` … チーム/ユーザー（任意）
+- `--wandb-mode {online,offline,disabled}` … 既定は `disabled`
+- `--wandb-run-name` … ラン名を上書き（既定は `--name` と同じ）
+- `--wandb-tags` … カンマ区切りタグ
+
+API キーを設定してから（初回のみ）実行してください:
+
+```bash
+export WANDB_API_KEY=<your_api_key>
+```
+
+使用例:
+
+```bash
+python -m src.train \
+	--epochs 10 --batch-size 128 --latent-dim 20 \
+	--loss bce --beta 1.0 --beta-schedule linear \
+	--project-dir reports --group mnist-bench --name test-run \
+	--wandb --wandb-mode online --wandb-project vae-paper-to-code \
+	--wandb-tags mnist,mlp,beta1
+```
+
+記録内容:
+- スカラー: `loss/recon`, `loss/kl`, `loss/total`, `beta`, `epoch`
+- 画像: 各エポックの `reconstructions`, `samples`（`latent_dim==2` のとき `traversal` も）
+
 ### 保存ポリシー（チェックポイント）
 デフォルトでは重み（.pt）は保存しません。必要な場合は `--save-weights` を付けてください。
 

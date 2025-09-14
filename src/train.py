@@ -96,6 +96,20 @@ def parse_args() -> argparse.Namespace:
         default="reports",
         help="[Deprecated] Direct output directory. If set to a non-default value, it overrides --project-dir/--group/--name.",
     )
+
+    # Weights & Biases logging
+    p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
+    p.add_argument("--wandb-project", type=str, default="vae-paper-to-code", help="W&B project name.")
+    p.add_argument("--wandb-entity", type=str, default="", help="W&B entity (team/user). Optional.")
+    p.add_argument(
+        "--wandb-mode",
+        type=str,
+        default="disabled",
+        choices=["online", "offline", "disabled"],
+        help="W&B mode: online/offline/disabled (default: disabled)",
+    )
+    p.add_argument("--wandb-run-name", type=str, default="", help="Override W&B run name (defaults to --name).")
+    p.add_argument("--wandb-tags", type=str, default="", help="Comma-separated W&B tags.")
     return p.parse_args()
 
 
@@ -204,6 +218,43 @@ def main():
     for d in [curves_dir, recon_dir, sample_dir, trav_dir]:
         ensure_dir(d)
 
+    # Optional: initialize Weights & Biases
+    wandb_run = None
+    if args.wandb and args.wandb_mode != "disabled":
+        try:
+            import wandb  # type: ignore
+
+            tags = [t.strip() for t in (args.wandb_tags.split(",") if args.wandb_tags else []) if t.strip()]
+            config = {"model": asdict(cfg)}
+            # include primitive CLI args
+            for k, v in vars(args).items():
+                try:
+                    json.dumps(v)  # ensure JSON-serializable
+                    config[k] = v
+                except Exception:
+                    pass
+
+            wandb_kwargs = {
+                "project": args.wandb_project,
+                "entity": args.wandb_entity or None,
+                "name": (args.wandb_run_name or name),
+                "group": group,
+                "mode": args.wandb_mode,
+                "config": config,
+                "dir": run_dir,
+                "tags": tags if tags else None,
+            }
+            wandb_kwargs = {k: v for k, v in wandb_kwargs.items() if v is not None}
+            wandb_run = wandb.init(**wandb_kwargs)
+            # Lightweight watch (can be commented out if too heavy)
+            try:
+                wandb.watch(model, log="gradients", log_freq=100)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[warn] wandb init failed: {e}. Continuing without W&B.")
+            wandb_run = None
+
     # Maintain a "latest" pointer per group for convenience
     try:
         group_dir = os.path.join(args.project_dir, group)
@@ -253,7 +304,8 @@ def main():
             if args.loss == "bce_logits":
                 x_out = torch.sigmoid(x_out)
             x_out = x_out.view(-1, 1, 28, 28)
-            save_reconstructions(x_in, x_out, os.path.join(recon_dir, f"epoch_{epoch:04d}.png"), n=8)
+            recon_path = os.path.join(recon_dir, f"epoch_{epoch:04d}.png")
+            save_reconstructions(x_in, x_out, recon_path, n=8)
 
             # Save random samples
             z = torch.randn(64, cfg.latent_dim, device=device)
@@ -261,11 +313,30 @@ def main():
             if args.loss == "bce_logits":
                 x_samp = torch.sigmoid(x_samp)
             x_samp = x_samp.view(-1, 1, 28, 28)
-            save_samples(x_samp, os.path.join(sample_dir, f"epoch_{epoch:04d}.png"), nrow=8)
+            samples_path = os.path.join(sample_dir, f"epoch_{epoch:04d}.png")
+            save_samples(x_samp, samples_path, nrow=8)
 
             # Traversal for z=2
+            trav_path = None
             if cfg.latent_dim == 2:
-                save_traversal(model.decode, device, cfg.latent_dim, os.path.join(trav_dir, f"epoch_{epoch:04d}.png"))
+                trav_path = os.path.join(trav_dir, f"epoch_{epoch:04d}.png")
+                save_traversal(model.decode, device, cfg.latent_dim, trav_path)
+
+            # Log images to W&B (if enabled)
+            if wandb_run is not None:
+                try:
+                    import wandb  # type: ignore
+                    log_payload = {
+                        "epoch": epoch,
+                        "images/reconstructions": wandb.Image(recon_path, caption=f"epoch {epoch}"),
+                        "images/samples": wandb.Image(samples_path, caption=f"epoch {epoch}"),
+                    }
+                    if trav_path and os.path.exists(trav_path):
+                        log_payload["images/traversal"] = wandb.Image(trav_path, caption=f"epoch {epoch}")
+                    wandb.log(log_payload, step=epoch)
+                except Exception as _e:
+                    # Non-fatal if image logging fails
+                    pass
 
         return recon.item(), kl.item(), total.item()
 
@@ -289,6 +360,20 @@ def main():
         recon_val, kl_val, total_val = evaluate(epoch, beta_val)
         log_rows.append({"epoch": epoch, "beta": beta_val, "recon": recon_val, "kl": kl_val, "total": total_val})
         print(f"[{epoch+1:03d}/{args.epochs}] beta={beta_val:.3f} recon={recon_val:.3f} kl={kl_val:.3f} total={total_val:.3f}")
+
+        # W&B: log scalar metrics
+        if wandb_run is not None:
+            try:
+                import wandb  # type: ignore
+                wandb.log({
+                    "epoch": epoch,
+                    "beta": beta_val,
+                    "loss/recon": recon_val,
+                    "loss/kl": kl_val,
+                    "loss/total": total_val,
+                }, step=epoch)
+            except Exception:
+                pass
 
         # persist model
         if args.save_weights:
@@ -328,6 +413,14 @@ def main():
             print(f"[warn] plotting failed: {e}")
 
     print("Done.")
+
+    # Finish W&B run if active
+    try:
+        if wandb_run is not None:
+            import wandb  # type: ignore
+            wandb.finish()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
