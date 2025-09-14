@@ -62,6 +62,38 @@ reports/
       traversals/epoch_XXXX.png # when z=2
 ```
 
+### Weights & Biases (optional)
+You can log metrics and images to [Weights & Biases](https://wandb.ai/).
+
+Key options:
+- `--wandb` … enable switch
+- `--wandb-project` … project name (default: `vae-paper-to-code`)
+- `--wandb-entity` … team/user (optional)
+- `--wandb-mode {online,offline,disabled}` … default `disabled`
+- `--wandb-run-name` … override run name for W&B (defaults to `--name`)
+- `--wandb-tags` … comma-separated tags
+
+Set your API key (once):
+
+```bash
+export WANDB_API_KEY=<your_api_key>
+```
+
+Example:
+
+```bash
+python -m src.train \
+  --epochs 10 --batch-size 128 --latent-dim 20 \
+  --loss bce --beta 1.0 --beta-schedule linear \
+  --project-dir reports --group mnist-bench --name test-run \
+  --wandb --wandb-mode online --wandb-project vae-paper-to-code \
+  --wandb-tags mnist,mlp,beta1
+```
+
+Logged items:
+- Scalars: `loss/recon`, `loss/kl`, `loss/total`, `beta`, `epoch`
+- Images: per-epoch `reconstructions`, `samples` (and `traversal` when `latent_dim==2`)
+
 ## Paper ↔ Code quick map
 - Approximate posterior q_φ(z|x)=N(μ,diag(σ²)) → `VAE.encode` (`mu, logvar`)
 - Reparameterization z=μ+σ⊙ε, ε~N(0,I) → `VAE.reparameterize`
