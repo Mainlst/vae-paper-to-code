@@ -96,7 +96,6 @@ PyTorch 公式実装（`examples/vae/main.py`）内の該当箇所:
 - `examples/` 以下は PyTorch 公式リポジトリから取得したコードで、BSD 3-Clause License（`examples/LICENSE`）に従います。
 - 本体コード（`src/` など）は `LICENSE` (MIT License) の下で配布しています。
 - 公式実装を再利用するヘルパー (`src/pytorch_examples/*`, `src/run_official.py`) は本リポジトリのライセンスで提供しています。
-- 詳細な帰属情報は `LICENSE-THIRD-PARTY.md` を参照してください。
 
 ## Next steps
 - 公式コードに最小限の変更を加えて学習曲線やチェックポイントを保存する
