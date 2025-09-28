@@ -1,19 +1,87 @@
+# Python bytecode & caches
 __pycache__/
-*.pyc
-.venv/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.pyre/
+.dmypy.json
+
+# Virtual environments & local env files
 .env
+.env.*
+.envrc
+.python-version
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+
+# Build & distribution artefacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+*.spec
+
+# Datasets (downloaded locally)
 data/
-node_modules/
+notebooks/data/
+examples/**/data/
+
+# Experiment outputs written by training runs
 reports/
 !reports/.gitkeep
-reports/curves/
-reports/reconstructions/
-reports/samples/
-reports/traversals/
-!reports/curves/.gitkeep
-!reports/reconstructions/.gitkeep
-!reports/samples/.gitkeep
-!reports/traversals/.gitkeep
+!reports/**/.gitkeep
+reports/**/wandb/
+reports/**/latest
+wandb/
+lightning_logs/
+mlruns/
+tensorboard/
+tb_logs/
+checkpoints/
+outputs/
+
+# Generated logs & reports
+.coverage
+coverage.xml
+htmlcov/
+*.log
+*.out
+*.err
+
+# Notebook artefacts
 .ipynb_checkpoints/
+*.nbconvert.ipynb
+*.nbconvert.html
+
+# Node.js artefacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp.*
+.pnpm-debug.log*
+
+# IDE & editor detritus
+.idea/
+.vscode/
+.history/
+.vs/
+.ropeproject/
+.spyproject/
+.project
+.classpath
+.settings/
+.factorypath
+
+# Miscellaneous OS/editor files
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*.orig

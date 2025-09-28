@@ -3,19 +3,26 @@
 英語版: [README.en.md](./README.en.md)
 
 このリポジトリは、**VAE の元論文**（Kingma & Welling, 2013/2014）と
-**PyTorch examples の `vae/main.py`** を 1 対 1 で照合しながら理解・再現・拡張するための最小実装です。
+**PyTorch examples の `vae/main.py`** をそのまま活用しながら理解・再現・拡張するためのワークフロー集です。
 
 - 論文: Auto-Encoding Variational Bayes (arXiv:1312.6114)
 - 参考実装: https://github.com/pytorch/examples/tree/main/vae
 
 ## What's inside
-- MLP VAE (MNIST)
-- Loss: BCE / BCE-with-logits / MSE を選択可能
-- β-VAE / KL アニーリング (linear / cyclic)
-- 学習曲線 (ELBO 内訳: recon, kl, total) の CSV/PNG 出力
-- 再構成・サンプル・潜在トラバーサルの保存 (z=2時)
+- PyTorch 公式 VAE 実装（`examples/vae/main.py`）をそのまま呼び出すラッパー
+- ノートブック `notebooks/vae_workflow.ipynb`：公式実装を中心に解説・可視化をまとめたチェックリスト
+- 公式スクリプトの入出力（`examples/vae/results/`）を見やすく解析する補助コード
+- サンプル画像をモンタージュ化するユーティリティ (`scripts/make_samples_montage.py`)
+
+## リポジトリ構成（主なエントリーポイント）
+- `examples/` … PyTorch 公式リポジトリから取得したサンプルコード（BSD 3-Clause）。`examples/vae/main.py` を直接呼び出せます。
+- `src/run_official.py` … 公式実装を CLI から実行するためのラッパー。
+- `src/pytorch_examples/` … 公式コードを変更せずに再利用するためのヘルパー群。
+- `reports/` … 学習ログや生成画像の出力先。
+- `notebooks/vae_workflow.ipynb` … 公式実装の動作確認と可視化ができるハンズオンノート。
 
 ## 更新情報
+- 2025-09-28: 独自トレーナー（`src.train`）を終了し、公式実装＋ノートブック中心の構成に移行。
 - 2025-08-31: 実験を繰り返しやすいよう出力ディレクトリを「グループ/ラン」単位に整理。
 	- 新オプション: `--project-dir`, `--group`, `--name`
 	- ランメタデータ `run_meta.json` を保存、`<group>/latest` シンボリックリンクを作成
@@ -30,114 +37,79 @@ pip install -r requirements.txt
 
 ## Usage
 
-```bash
-# 構造化出力（推奨）: reports/<group>/<name>/...
-# name には自動で日付-通し番号プレフィックス (YYYYMMDD-XXX-) が付与されます
-# （例: 20250831-001-test-run や 20250831-001-seed42）。既存ディレクトリと衝突しないよう自動インクリメントします。
-python -m src.train \
-	--epochs 20 --batch-size 128 --latent-dim 20 \
-	--loss bce --beta 1.0 --beta-schedule linear \
-	--lr 1e-3 --device auto --seed 42 \
-	--project-dir reports --group mnist-bench --name test-run
-
-# 互換モード（--save-dir を明示指定すると直下に出力）
-python -m src.train --epochs 5 --save-dir reports_legacy
-```
-
-主な引数:
-- `--loss {bce,bce_logits,mse}`
-- `--beta 1.0` / `--beta-schedule {none,linear,cyclic}`
-- `--latent-dim 2|8|32|...`
-- `--reduction {mean,sum}` (既定: mean)
-- `--save-dir` 出力先 (curves, reconstructions, samples, traversals)
-
-### Weights & Biases 連携（任意）
-学習ログを [Weights & Biases](https://wandb.ai/) に送ることができます。
-
-主なオプション:
-- `--wandb` … 有効化スイッチ
-- `--wandb-project` … プロジェクト名（既定: `vae-paper-to-code`）
-- `--wandb-entity` … チーム/ユーザー（任意）
-- `--wandb-mode {online,offline,disabled}` … 既定は `disabled`
-- `--wandb-run-name` … ラン名を上書き（既定は `--name` と同じ）
-- `--wandb-tags` … カンマ区切りタグ
-
-API キーを設定してから（初回のみ）実行してください:
+### PyTorch 公式 VAE を動かす
 
 ```bash
-export WANDB_API_KEY=<your_api_key>
+python -m src.run_official -- --epochs 5 --batch-size 64
 ```
 
-使用例:
+- `src/run_official.py` が `examples/vae/main.py` を同一プロセス内で起動します。
+- `./data` フォルダが存在する場合、`examples/data` へのシンボリックリンクを自動作成して公式実装と共有します（失敗した場合は `examples/data` にダウンロードされます）。
+- 出力画像は `examples/vae/results/` に保存され、公式実装と同じレイアウトで確認できます。
+- 公式側の追加オプションは、そのまま続けて指定してください（例: `--no-accel`）。
 
-```bash
-python -m src.train \
-	--epochs 10 --batch-size 128 --latent-dim 20 \
-	--loss bce --beta 1.0 --beta-schedule linear \
-	--project-dir reports --group mnist-bench --name test-run \
-	--wandb --wandb-mode online --wandb-project vae-paper-to-code \
-	--wandb-tags mnist,mlp,beta1
+### ノートブックでチェックリストを進める
+
+`notebooks/vae_workflow.ipynb` を開き、上から順にセルを実行してください。以下をサポートしています。
+
+- 環境セットアップと MNIST の確認
+- 公式スクリプトの参照・実行
+- 生成された画像（再構成・サンプル）の一覧や最新結果の可視化
+- 複数条件で公式スクリプトを連続実行するヘルパー
+
+### 生成結果の整理
+
+公式スクリプトは既定で `examples/vae/results/` に以下のようなファイルを生成します。
+
+```
+examples/vae/results/
+	reconstruction_1.png
+	reconstruction_2.png
+	...
+	sample_1.png
+	sample_2.png
+	...
 ```
 
-記録内容:
-- スカラー: `loss/recon`, `loss/kl`, `loss/total`, `beta`, `epoch`
-- 画像: 各エポックの `reconstructions`, `samples`（`latent_dim==2` のとき `traversal` も）
-
-### 保存ポリシー（チェックポイント）
-デフォルトでは重み（.pt）は保存しません。必要な場合は `--save-weights` を付けてください。
-
-関連オプション:
-- `--save-weights` … エポックごとに `vae_epoch_XXXX.pt` を保存
-- `--no-date-prefix` … ラン名の自動プレフィックス付与を無効化
+`scripts/make_samples_montage.py` を使うと、生成サンプルをモンタージュ画像にまとめられます。
 
 ## Outputs
-構造化出力の例（推奨）:
+公式スクリプトはエポックごとに以下の PNG を保存します（デフォルト設定）。
 
 ```
-reports/
-	<group>/
-		latest -> ./<name>          # 直近ランへのシンボリックリンク（失敗時は latest.txt）
-		<name>/
-			run_meta.json             # すべての引数と設定のスナップショット
-			vae_epoch_0000.pt         # --save-weights 指定時のみ
-			curves/
-				train_log.csv           # epoch, beta, recon, kl, total
-				losses.png              # 学習曲線
-			reconstructions/epoch_XXXX.png
-			samples/epoch_XXXX.png
-			traversals/epoch_XXXX.png # z=2 のとき
+examples/vae/results/
+    reconstruction_<epoch>.png
+    sample_<epoch>.png
 ```
+
+ノートブックではこれらのファイルを自動検出し、最新の画像やエポックごとの遷移を表示するセルを用意しています。
 
 ## Paper ↔ Code quick map
-- 近似事後 q_φ(z|x)=N(μ,diag(σ²)) → `VAE.encode`（`mu, logvar`）
+PyTorch 公式実装（`examples/vae/main.py`）内の該当箇所:
+
+- 近似事後 q_φ(z|x)=N(μ,diag(σ²)) → `VAE.encode`
 - 再パラメータ化 z=μ+σ⊙ε, ε~N(0,I) → `VAE.reparameterize`
-- 尤度 p_θ(x|z)（ベルヌーイ仮定）→ `loss=bce`（`Sigmoid` 出力）
-- **ELBO** ＝ 再構成項 − KL → 実装では `total = recon + beta * kl`（最小化 = −ELBO）
+- 尤度 p_θ(x|z)（ベルヌーイ仮定）→ `loss_function` 内の BCE 項
+- **ELBO** ＝ 再構成項 − KL → `loss_function` の合計（最小化 = −ELBO）
 
 ## License & Attribution
-- `LICENSE-THIRD-PARTY.md` に、PyTorch examples への帰属とライセンス注意点を記載。
-- 本リポジトリのコードは MIT 互換を想定（必要に応じて変更してください）
+- `examples/` 以下は PyTorch 公式リポジトリから取得したコードで、BSD 3-Clause License（`examples/LICENSE`）に従います。
+- 本体コード（`src/` など）は `LICENSE` (MIT License) の下で配布しています。
+- 公式実装を再利用するヘルパー (`src/pytorch_examples/*`, `src/run_official.py`) は本リポジトリのライセンスで提供しています。
+- 詳細な帰属情報は `LICENSE-THIRD-PARTY.md` を参照してください。
 
 ## Next steps
-- ConvVAE（CIFAR-10）/ Gaussian likelihood (MSE) 比較
-- IWAE (importance weighted bound)
-- posterior collapse 対策の比較（βアニーリング、free bits など）
-
-### Tips: 複数条件の一括実行
-グリッド実験のサンプルスクリプトを用意しています。
-
-```bash
-bash scripts/run_grid.sh reports my-mnist-group
-```
-
-実行後の最新ランは `reports/my-mnist-group/latest` から辿れます。
+- 公式コードに最小限の変更を加えて学習曲線やチェックポイントを保存する
+- ConvVAE 化や別データセット（CIFAR-10 など）への拡張を検討する
+- β アニーリングや IWAE など、論文で言及される改良アイデアを上乗せして比較する
 
 ### Tips: サンプル画像のモンタージュ
-各エポックの `samples/epoch_*.png` をまとめて 1 枚にできます。
+各エポックの `examples/vae/results/sample_*.png` をまとめて 1 枚にできます。
 
 ```bash
 python scripts/make_samples_montage.py \
-	--input-dir reports/my-mnist-group/latest/samples \
-	--output reports/my-mnist-group/latest/samples_montage.png \
+	--input-dir examples/vae/results \
+	--pattern "sample_*.png" \
+	--output examples/vae/results/samples_montage.png \
 	--cols 5 --stride 1 --font-size 14
 ```

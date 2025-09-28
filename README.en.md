@@ -2,17 +2,23 @@
 
 日本語版: [README.md](./README.md)
 
-This repository provides a minimal, readable implementation to align the original VAE paper (Kingma & Welling, 2013/2014) with PyTorch's `examples/vae` line by line.
+This repository now focuses on running and inspecting PyTorch's official `examples/vae` implementation while keeping close ties to the VAE paper (Kingma & Welling, 2013/2014).
 
 - Paper: Auto-Encoding Variational Bayes (arXiv:1312.6114)
 - Reference: https://github.com/pytorch/examples/tree/main/vae
 
 ## What's inside
-- MLP VAE (MNIST)
-- Loss options: BCE / BCE-with-logits / MSE
-- β-VAE and KL annealing (linear / cyclic)
-- Training curves (ELBO terms: recon, kl, total) exported as CSV/PNG
-- Save reconstructions, random samples, and latent traversals (when z=2)
+- Wrapper to launch the official PyTorch VAE implementation (`examples/vae/main.py`) as-is
+- Notebook `notebooks/vae_workflow.ipynb` with a step-by-step checklist around the official example
+- Helper utilities to inspect the generated images under `examples/vae/results/`
+- Montage tool for samples (`scripts/make_samples_montage.py`)
+
+## Repository layout (main entry points)
+- `examples/` – Official PyTorch example code (BSD 3-Clause). You can run `examples/vae/main.py` directly.
+- `src/run_official.py` – CLI wrapper to execute the upstream example.
+- `src/pytorch_examples/` – Helper utilities for reusing the official code without modifying it.
+- `reports/` – Destination for experiment logs and generated artifacts.
+- `notebooks/vae_workflow.ipynb` – Hands-on notebook for the official workflow and visualizations.
 
 ## Install
 
@@ -23,90 +29,79 @@ pip install -r requirements.txt
 
 ## Usage
 
-```bash
-# Structured outputs (recommended): reports/<group>/<name>/...
-# A date-serial prefix (YYYYMMDD-XXX-) is automatically added to the run name
-# (e.g., 20250831-001-test-run or 20250831-001-seed42). It auto-increments to avoid collisions.
-python -m src.train \
-  --epochs 20 --batch-size 128 --latent-dim 20 \
-  --loss bce --beta 1.0 --beta-schedule linear \
-  --lr 1e-3 --device auto --seed 42 \
-  --project-dir reports --group mnist-bench --name test-run
+### Run the official PyTorch VAE
 
-# Compatibility mode: if --save-dir is explicitly set, write directly to that path
-python -m src.train --epochs 5 --save-dir reports_legacy
+```bash
+python -m src.run_official -- --epochs 5 --batch-size 64
 ```
 
-### Checkpoint saving policy
-By default, weights (.pt) are not saved. Use `--save-weights` to enable checkpointing per epoch.
+- `src/run_official.py` launches `examples/vae/main.py` in-process.
+- When `./data` exists, a symlink to `examples/data` is created automatically (otherwise the example downloads into `examples/data`).
+- Outputs are saved under `examples/vae/results/`, matching the upstream layout.
+- Extra arguments for the official script pass through unchanged (e.g., `--no-accel`).
 
-Related options:
-- `--save-weights` … save `vae_epoch_XXXX.pt` per epoch
-- `--no-date-prefix` … disable auto date-serial prefixing of run names
+### Follow the checklist notebook
+
+Open `notebooks/vae_workflow.ipynb` and run the cells from top to bottom to:
+
+- Verify the environment and download MNIST
+- Preview the official script and choose hyperparameters
+- Launch the official example and inspect the generated images
+- Optionally loop over multiple configurations
+
+### Organize generated results
+
+By default the official script creates PNG files under `examples/vae/results/`:
+
+```
+examples/vae/results/
+    reconstruction_<epoch>.png
+    sample_<epoch>.png
+```
+
+Use `scripts/make_samples_montage.py` if you want to stitch multiple samples together.
 
 ## Outputs
-Recommended structured layout:
+By default the official script stores PNG files per epoch:
 
 ```
-reports/
-  <group>/
-    latest -> ./<name>          # symlink to the latest run (or latest.txt if symlink fails)
-    <name>/
-      run_meta.json             # snapshot of all args and config
-  vae_epoch_0000.pt         # only when --save-weights is provided
-      curves/
-        train_log.csv           # epoch, beta, recon, kl, total
-        losses.png              # quick plot
-      reconstructions/epoch_XXXX.png
-      samples/epoch_XXXX.png
-      traversals/epoch_XXXX.png # when z=2
+examples/vae/results/
+    reconstruction_<epoch>.png
+    sample_<epoch>.png
 ```
 
-### Weights & Biases (optional)
-You can log metrics and images to [Weights & Biases](https://wandb.ai/).
-
-Key options:
-- `--wandb` … enable switch
-- `--wandb-project` … project name (default: `vae-paper-to-code`)
-- `--wandb-entity` … team/user (optional)
-- `--wandb-mode {online,offline,disabled}` … default `disabled`
-- `--wandb-run-name` … override run name for W&B (defaults to `--name`)
-- `--wandb-tags` … comma-separated tags
-
-Set your API key (once):
-
-```bash
-export WANDB_API_KEY=<your_api_key>
-```
-
-Example:
-
-```bash
-python -m src.train \
-  --epochs 10 --batch-size 128 --latent-dim 20 \
-  --loss bce --beta 1.0 --beta-schedule linear \
-  --project-dir reports --group mnist-bench --name test-run \
-  --wandb --wandb-mode online --wandb-project vae-paper-to-code \
-  --wandb-tags mnist,mlp,beta1
-```
-
-Logged items:
-- Scalars: `loss/recon`, `loss/kl`, `loss/total`, `beta`, `epoch`
-- Images: per-epoch `reconstructions`, `samples` (and `traversal` when `latent_dim==2`)
+The notebook automatically detects these files and plots both the latest images and progression snapshots.
 
 ## Paper ↔ Code quick map
-- Approximate posterior q_φ(z|x)=N(μ,diag(σ²)) → `VAE.encode` (`mu, logvar`)
+Pointers into the official implementation (`examples/vae/main.py`):
+
+- Approximate posterior q_φ(z|x)=N(μ,diag(σ²)) → `VAE.encode`
 - Reparameterization z=μ+σ⊙ε, ε~N(0,I) → `VAE.reparameterize`
-- Likelihood p_θ(x|z) (Bernoulli) → `loss=bce` (with `Sigmoid` outputs)
-- ELBO = recon − KL → implemented as `total = recon + beta * kl` (minimize = −ELBO)
+- Likelihood p_θ(x|z) (Bernoulli) → `loss_function`'s BCE term
+- ELBO = recon − KL → `loss_function` returning the sum of reconstruction and KL terms
 
 ## Updates
-- 2025-08-31: Introduced structured experiment directories (group/name) for repeatable runs.
-  - New CLI options: `--project-dir`, `--group`, `--name`
-  - Save run metadata `run_meta.json`; maintain `<group>/latest` symlink
-  - Added grid runner example `scripts/run_grid.sh`
+- 2025-09-28: Retired the custom trainer (`src.train`) and focused the workflow on the official PyTorch example and helper notebook.
+- 2025-08-31: Introduced structured experiment directories (group/name) for repeatable runs (legacy content retained under `reports/`).
+
+## License & Attribution
+- Code under `examples/` comes from the official PyTorch repository and remains under the BSD 3-Clause License (`examples/LICENSE`).
+- Core project code (e.g., `src/`) is distributed under `LICENSE` (MIT License).
+- Wrapper utilities (`src/pytorch_examples/*`, `src/run_official.py`) are provided under this repository's license.
+- See `LICENSE-THIRD-PARTY.md` for attribution details.
 
 ## Next steps
-- ConvVAE (CIFAR-10) / Gaussian likelihood (MSE) comparison
-- IWAE (importance weighted bound)
-- Techniques against posterior collapse (β-annealing, free bits, etc.)
+- Add lightweight logging (CSV, checkpointing) around the official script if you need metrics over time
+- Extend to ConvVAE / other datasets (e.g., CIFAR-10)
+- Experiment with improvements mentioned in the literature (β-annealing, IWAE, free bits, etc.)
+
+### Tips: make a montage of samples
+Combine `examples/vae/results/sample_*.png` into a single image:
+
+```bash
+python scripts/make_samples_montage.py \
+    --input-dir examples/vae/results \
+    --pattern "sample_*.png" \
+    --output examples/vae/results/samples_montage.png \
+    --cols 5 --stride 1 --font-size 14
+```
