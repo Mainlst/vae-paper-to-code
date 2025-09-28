@@ -1,19 +1,31 @@
+# Python bytecode & caches
 __pycache__/
-*.pyc
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+
+# Virtual environments & local env files
 .venv/
 .env
-data/
+
+# JavaScript tooling
 node_modules/
+
+# Datasets (downloaded locally)
+data/
+
+# Experiment outputs written by training runs
 reports/
 !reports/.gitkeep
-reports/curves/
-reports/reconstructions/
-reports/samples/
-reports/traversals/
-!reports/curves/.gitkeep
-!reports/reconstructions/.gitkeep
-!reports/samples/.gitkeep
-!reports/traversals/.gitkeep
+!reports/**/.gitkeep
+reports/**/wandb/
+reports/**/latest
+
+# Notebook artefacts
 .ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# Miscellaneous OS/editor files
 .DS_Store
 Thumbs.db
+*.swp
