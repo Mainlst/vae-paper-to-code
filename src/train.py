@@ -2,11 +2,18 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import asdict
+from datetime import datetime
+import json
 import pandas as pd
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+try:
+    from torchvision import datasets, transforms  # type: ignore
+    _HAS_TORCHVISION = True
+except Exception as e:  # pragma: no cover
+    print(f"[warn] torchvision import failed: {e}. Using local MNIST loader.")
+    _HAS_TORCHVISION = False
 
 from .vae import VAE, VAEConfig, reconstruction_loss, kld_standard_normal
 from .utils.vis import ensure_dir, save_reconstructions, save_samples, save_traversal
@@ -37,6 +44,7 @@ def get_device(name: str) -> torch.device:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="VAE (paper↔code alignment)")
+    # Training
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--latent-dim", type=int, default=20)
@@ -48,9 +56,60 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--device", type=str, default="auto")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--save-dir", type=str, default="reports")
     p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--no-pin", action="store_true")
+    p.add_argument("--no-pin", action="store_true", help="Disable DataLoader pin_memory (auto-disabled on CPU)")
+    p.add_argument("--persistent-workers", action="store_true", help="Keep DataLoader workers alive across epochs (requires num_workers>0)")
+
+    # Output (new structured layout)
+    p.add_argument(
+        "--project-dir",
+        type=str,
+        default="reports",
+        help="Project root directory to store all experiments (default: reports)",
+    )
+    p.add_argument(
+        "--group",
+        type=str,
+        default="",
+        help="Experiment group name (e.g., mnist-lat20-b1.0-linear-bce). If empty, generated automatically.",
+    )
+    p.add_argument(
+        "--name",
+        type=str,
+        default="",
+        help="Run name under the group. If empty, generated as seed{seed} (prefixed with date-serial).",
+    )
+    p.add_argument(
+        "--no-date-prefix",
+        action="store_true",
+        help="Disable auto prefixing run name with YYYYMMDD-XXX serial (per group/day).",
+    )
+    p.add_argument(
+        "--save-weights",
+        action="store_true",
+        help="Save model checkpoints (default: do not save).",
+    )
+    # Deprecated but kept for compatibility: if explicitly set to non-default, overrides structured layout
+    p.add_argument(
+        "--save-dir",
+        type=str,
+        default="reports",
+        help="[Deprecated] Direct output directory. If set to a non-default value, it overrides --project-dir/--group/--name.",
+    )
+
+    # Weights & Biases logging
+    p.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
+    p.add_argument("--wandb-project", type=str, default="vae-paper-to-code", help="W&B project name.")
+    p.add_argument("--wandb-entity", type=str, default="", help="W&B entity (team/user). Optional.")
+    p.add_argument(
+        "--wandb-mode",
+        type=str,
+        default="disabled",
+        choices=["online", "offline", "disabled"],
+        help="W&B mode: online/offline/disabled (default: disabled)",
+    )
+    p.add_argument("--wandb-run-name", type=str, default="", help="Override W&B run name (defaults to --name).")
+    p.add_argument("--wandb-tags", type=str, default="", help="Comma-separated W&B tags.")
     return p.parse_args()
 
 
@@ -61,17 +120,33 @@ def main():
     device = get_device(args.device)
 
     # Data: MNIST in [0,1], 28x28 → flatten
-    transform = transforms.Compose([transforms.ToTensor()])
-    train_ds = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
-    test_ds = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
+    if _HAS_TORCHVISION:
+        transform = transforms.Compose([transforms.ToTensor()])
+        train_ds = datasets.MNIST(root="./data", train=True, download=False, transform=transform)
+        test_ds = datasets.MNIST(root="./data", train=False, download=False, transform=transform)
+    else:
+        from .utils.mnist import MNISTLocal
+        transform = None  # MNISTLocal already returns tensors in [0,1]
+        train_ds = MNISTLocal(root="./data", train=True, transform=transform)
+        test_ds = MNISTLocal(root="./data", train=False, transform=transform)
 
+    pin_mem = (device.type == "cuda") and (not args.no_pin)
+    pw = args.persistent_workers and (args.num_workers > 0)
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, pin_memory=not args.no_pin
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=pin_mem,
+        persistent_workers=pw,
     )
     test_loader = DataLoader(
-        test_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, pin_memory=not args.no_pin
+        test_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=pin_mem,
+        persistent_workers=pw,
     )
 
     # Model
@@ -86,13 +161,130 @@ def main():
 
     opt = optim.Adam(model.parameters(), lr=args.lr)
 
-    # Output dirs
-    curves_dir = os.path.join(args.save_dir, "curves")
-    recon_dir = os.path.join(args.save_dir, "reconstructions")
-    sample_dir = os.path.join(args.save_dir, "samples")
-    trav_dir = os.path.join(args.save_dir, "traversals")
+    # Build structured output directories
+    def _auto_group() -> str:
+        # Keep concise but informative
+        return (
+            f"mnist-lat{args.latent_dim}-"
+            f"{args.loss}-"
+            f"beta{args.beta:g}-{args.beta_schedule}-"
+            f"{args.reduction}"
+        )
+
+    group = args.group or _auto_group()
+
+    def _gen_prefixed_name(base: str) -> str:
+        if args.no_date_prefix:
+            return base
+        today = datetime.now().strftime('%Y%m%d')
+        group_dir = os.path.join(args.project_dir, group)
+        ensure_dir(group_dir)
+        # If base already starts with today's date-serial, keep as is
+        import re
+        if re.match(rf"^{today}-\\d{{3}}[\-_]", base):
+            return base
+        # Find next serial for today
+        existing = []
+        try:
+            for entry in os.listdir(group_dir):
+                if os.path.isdir(os.path.join(group_dir, entry)) and entry.startswith(f"{today}-"):
+                    m = re.match(rf"^{today}-(\\d{{3}})", entry)
+                    if m:
+                        existing.append(int(m.group(1)))
+        except Exception:
+            pass
+        next_id = (max(existing) + 1) if existing else 1
+        prefix = f"{today}-{next_id:03d}"
+        candidate = f"{prefix}-{base}" if base else prefix
+        # Ensure uniqueness
+        while os.path.exists(os.path.join(group_dir, candidate)):
+            next_id += 1
+            prefix = f"{today}-{next_id:03d}"
+            candidate = f"{prefix}-{base}" if base else prefix
+        return candidate
+
+    base_name = args.name or f"seed{args.seed}"
+    name = _gen_prefixed_name(base_name)
+
+    # Backward-compat: if save-dir is explicitly set to non-default, use it as the final run dir
+    use_legacy = ("--save-dir" in os.sys.argv) and (args.save_dir != "reports")
+    run_dir = args.save_dir if use_legacy else os.path.join(args.project_dir, group, name)
+
+    # Subdirs
+    curves_dir = os.path.join(run_dir, "curves")
+    recon_dir = os.path.join(run_dir, "reconstructions")
+    sample_dir = os.path.join(run_dir, "samples")
+    trav_dir = os.path.join(run_dir, "traversals")
     for d in [curves_dir, recon_dir, sample_dir, trav_dir]:
         ensure_dir(d)
+
+    # Optional: initialize Weights & Biases
+    wandb_run = None
+    if args.wandb and args.wandb_mode != "disabled":
+        try:
+            import wandb  # type: ignore
+
+            tags = [t.strip() for t in (args.wandb_tags.split(",") if args.wandb_tags else []) if t.strip()]
+            config = {"model": asdict(cfg)}
+            # include primitive CLI args
+            for k, v in vars(args).items():
+                try:
+                    json.dumps(v)  # ensure JSON-serializable
+                    config[k] = v
+                except Exception:
+                    pass
+
+            wandb_kwargs = {
+                "project": args.wandb_project,
+                "entity": args.wandb_entity or None,
+                "name": (args.wandb_run_name or name),
+                "group": group,
+                "mode": args.wandb_mode,
+                "config": config,
+                "dir": run_dir,
+                "tags": tags if tags else None,
+            }
+            wandb_kwargs = {k: v for k, v in wandb_kwargs.items() if v is not None}
+            wandb_run = wandb.init(**wandb_kwargs)
+            # Lightweight watch (can be commented out if too heavy)
+            try:
+                wandb.watch(model, log="gradients", log_freq=100)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[warn] wandb init failed: {e}. Continuing without W&B.")
+            wandb_run = None
+
+    # Maintain a "latest" pointer per group for convenience
+    try:
+        group_dir = os.path.join(args.project_dir, group)
+        ensure_dir(group_dir)
+        latest_link = os.path.join(group_dir, "latest")
+        # Try to create/refresh symlink; fall back to a text file
+        try:
+            if os.path.islink(latest_link) or os.path.isfile(latest_link):
+                os.remove(latest_link)
+            os.symlink(os.path.relpath(run_dir, group_dir), latest_link)
+        except Exception:
+            with open(os.path.join(group_dir, "latest.txt"), "w", encoding="utf-8") as f:
+                f.write(run_dir + "\n")
+    except Exception as e:
+        print(f"[warn] failed to update latest pointer: {e}")
+
+    # Save run metadata for reproducibility
+    try:
+        meta = {
+            "group": group,
+            "name": name,
+            "run_dir": run_dir,
+            "args": vars(args),
+            "cfg": asdict(cfg),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        with open(os.path.join(run_dir, "run_meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[warn] failed to save run_meta.json: {e}")
 
     log_rows = []
 
@@ -112,7 +304,8 @@ def main():
             if args.loss == "bce_logits":
                 x_out = torch.sigmoid(x_out)
             x_out = x_out.view(-1, 1, 28, 28)
-            save_reconstructions(x_in, x_out, os.path.join(recon_dir, f"epoch_{epoch:04d}.png"), n=8)
+            recon_path = os.path.join(recon_dir, f"epoch_{epoch:04d}.png")
+            save_reconstructions(x_in, x_out, recon_path, n=8)
 
             # Save random samples
             z = torch.randn(64, cfg.latent_dim, device=device)
@@ -120,11 +313,30 @@ def main():
             if args.loss == "bce_logits":
                 x_samp = torch.sigmoid(x_samp)
             x_samp = x_samp.view(-1, 1, 28, 28)
-            save_samples(x_samp, os.path.join(sample_dir, f"epoch_{epoch:04d}.png"), nrow=8)
+            samples_path = os.path.join(sample_dir, f"epoch_{epoch:04d}.png")
+            save_samples(x_samp, samples_path, nrow=8)
 
             # Traversal for z=2
+            trav_path = None
             if cfg.latent_dim == 2:
-                save_traversal(model.decode, device, cfg.latent_dim, os.path.join(trav_dir, f"epoch_{epoch:04d}.png"))
+                trav_path = os.path.join(trav_dir, f"epoch_{epoch:04d}.png")
+                save_traversal(model.decode, device, cfg.latent_dim, trav_path)
+
+            # Log images to W&B (if enabled)
+            if wandb_run is not None:
+                try:
+                    import wandb  # type: ignore
+                    log_payload = {
+                        "epoch": epoch,
+                        "images/reconstructions": wandb.Image(recon_path, caption=f"epoch {epoch}"),
+                        "images/samples": wandb.Image(samples_path, caption=f"epoch {epoch}"),
+                    }
+                    if trav_path and os.path.exists(trav_path):
+                        log_payload["images/traversal"] = wandb.Image(trav_path, caption=f"epoch {epoch}")
+                    wandb.log(log_payload, step=epoch)
+                except Exception as _e:
+                    # Non-fatal if image logging fails
+                    pass
 
         return recon.item(), kl.item(), total.item()
 
@@ -149,20 +361,38 @@ def main():
         log_rows.append({"epoch": epoch, "beta": beta_val, "recon": recon_val, "kl": kl_val, "total": total_val})
         print(f"[{epoch+1:03d}/{args.epochs}] beta={beta_val:.3f} recon={recon_val:.3f} kl={kl_val:.3f} total={total_val:.3f}")
 
+        # W&B: log scalar metrics
+        if wandb_run is not None:
+            try:
+                import wandb  # type: ignore
+                wandb.log({
+                    "epoch": epoch,
+                    "beta": beta_val,
+                    "loss/recon": recon_val,
+                    "loss/kl": kl_val,
+                    "loss/total": total_val,
+                }, step=epoch)
+            except Exception:
+                pass
+
         # persist model
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state": model.state_dict(),
-                "cfg": asdict(cfg),
-                "args": vars(args),
-            },
-            os.path.join(args.save_dir, f"vae_epoch_{epoch:04d}.pt"),
-        )
+        if args.save_weights:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state": model.state_dict(),
+                    "cfg": asdict(cfg),
+                    "args": vars(args),
+                },
+                os.path.join(run_dir, f"vae_epoch_{epoch:04d}.pt"),
+            )
 
         # save curves CSV and quick plot
-        import matplotlib.pyplot as plt
-        import pandas as pd
+        # Use a non-interactive backend to avoid blocking in headless envs
+        import matplotlib  # type: ignore
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt  # type: ignore
+        import pandas as pd  # type: ignore
 
         df = pd.DataFrame(log_rows)
         csv_path = os.path.join(curves_dir, "train_log.csv")
@@ -183,6 +413,14 @@ def main():
             print(f"[warn] plotting failed: {e}")
 
     print("Done.")
+
+    # Finish W&B run if active
+    try:
+        if wandb_run is not None:
+            import wandb  # type: ignore
+            wandb.finish()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

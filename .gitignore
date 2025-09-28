@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 data/
+node_modules/
 reports/
 !reports/.gitkeep
 reports/curves/

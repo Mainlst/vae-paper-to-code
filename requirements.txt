@@ -4,3 +4,4 @@ numpy>=1.26
 matplotlib>=3.8
 pandas>=2.2
 tqdm>=4.66
+wandb>=0.17
