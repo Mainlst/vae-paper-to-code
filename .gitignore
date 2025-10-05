@@ -45,6 +45,7 @@ tensorboard/
 tb_logs/
 checkpoints/
 outputs/
+trained_models/
 
 # Generated logs & reports
 .coverage
