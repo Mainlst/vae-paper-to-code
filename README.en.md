@@ -88,7 +88,6 @@ Pointers into the official implementation (`examples/vae/main.py`):
 - Code under `examples/` comes from the official PyTorch repository and remains under the BSD 3-Clause License (`examples/LICENSE`).
 - Core project code (e.g., `src/`) is distributed under `LICENSE` (MIT License).
 - Wrapper utilities (`src/pytorch_examples/*`, `src/run_official.py`) are provided under this repository's license.
-- See `LICENSE-THIRD-PARTY.md` for attribution details.
 
 ## Next steps
 - Add lightweight logging (CSV, checkpointing) around the official script if you need metrics over time
